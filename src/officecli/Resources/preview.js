@@ -17,6 +17,7 @@
         // viewport (the screenshot path sizes it to the slide) so they take none.
         const headless = document.documentElement.classList.contains('headless');
         const availW = main.clientWidth - (headless ? 0 : 40);
+        const availH = main.clientHeight - (headless ? 0 : 40);
         const slides = document.querySelectorAll('.main > .slide-container .slide');
         // A lone headless slide is a single-slide screenshot: scale it to fill the
         // viewport in BOTH directions (up or down) so the capture is flush at the
@@ -25,8 +26,14 @@
         const fill = headless && slides.length === 1;
         slides.forEach(slide => {
             const designW = slide.offsetWidth;
-            if (availW > 0 && (fill || designW > availW)) {
-                const s = availW / designW;
+            if (availW > 0 && availH > 0 && (fill || designW > availW)) {
+                // A headless single-slide capture must fit both layout axes.
+                // Chromium's legacy command-line screenshot can expose a
+                // shorter layout viewport than its requested bitmap; fitting by
+                // height preserves footers/legends instead of cutting them off.
+                const s = fill
+                    ? Math.min(availW / designW, availH / slide.offsetHeight)
+                    : availW / designW;
                 slide.style.transform = `scale(${s})`;
                 slide.style.transformOrigin = 'center top';
                 const designH = slide.offsetHeight;
