@@ -415,6 +415,7 @@ internal static class HtmlScreenshot
         var cdp = TryChromeCdp(bin, url, outPath, w, h, scale: 1);
         if (cdp.Ok)
             return cdp;
+        DebugScreenshot($"CDP failed: {cdp.Error ?? "unknown"}; falling back to command-line Chrome");
 
         var args = new[]
         {
@@ -437,7 +438,10 @@ internal static class HtmlScreenshot
             $"--screenshot={outPath}",
             url,
         };
-        return RunBinary(bin, args, timeoutMs: 30_000);
+        var fallback = RunBinary(bin, args, timeoutMs: 30_000);
+        if (!fallback.Item1)
+            DebugScreenshot($"Chrome fallback failed: {fallback.Item2 ?? "unknown"}");
+        return fallback;
     }
 
     /// <summary>
@@ -568,6 +572,12 @@ internal static class HtmlScreenshot
         listener.Start();
         try { return ((IPEndPoint)listener.LocalEndpoint).Port; }
         finally { listener.Stop(); }
+    }
+
+    private static void DebugScreenshot(string message)
+    {
+        if (string.Equals(Environment.GetEnvironmentVariable("OFFICECLI_SCREENSHOT_DEBUG"), "1", StringComparison.Ordinal))
+            Console.Error.WriteLine($"[officecli-screenshot] {message}");
     }
 
     private static JsonDocument CdpCommand(ClientWebSocket socket, int id, string method, object parameters,
