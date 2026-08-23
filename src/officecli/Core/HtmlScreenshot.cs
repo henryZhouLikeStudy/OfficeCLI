@@ -464,51 +464,41 @@ internal static class HtmlScreenshot
             {
                 "--headless=new", "--disable-gpu", "--no-sandbox", "--hide-scrollbars",
                 "--allow-file-access-from-files", "--disable-background-networking",
+                "--remote-allow-origins=*",
                 $"--remote-debugging-address=127.0.0.1", $"--remote-debugging-port={port}",
                 $"--user-data-dir={profile}", "about:blank",
             }) psi.ArgumentList.Add(arg);
             browser = Process.Start(psi);
             if (browser == null) return (false, "Chrome did not start");
 
-            var versionUrl = $"http://127.0.0.1:{port}/json/version";
-            string? browserWs = null;
             using var http = new HttpClient { Timeout = TimeSpan.FromMilliseconds(750) };
             var deadline = DateTime.UtcNow.AddSeconds(12);
-            while (DateTime.UtcNow < deadline)
+            string? pageWs = null;
+            // Reuse the initial about:blank page instead of creating a target
+            // through the browser websocket.  On Windows Edge/Chrome the
+            // browser-level Target.createTarget response may arrive before the
+            // page websocket is published in /json/list, causing a false
+            // fallback to the buggy --window-size path.  Poll the list until a
+            // page target is fully discoverable.
+            while (DateTime.UtcNow < deadline && string.IsNullOrEmpty(pageWs))
             {
                 try
                 {
-                    var version = http.GetStringAsync(versionUrl).GetAwaiter().GetResult();
-                    using var versionJson = JsonDocument.Parse(version);
-                    if (versionJson.RootElement.TryGetProperty("webSocketDebuggerUrl", out var ws))
+                    var targets = http.GetStringAsync($"http://127.0.0.1:{port}/json/list").GetAwaiter().GetResult();
+                    using var targetJson = JsonDocument.Parse(targets);
+                    foreach (var target in targetJson.RootElement.EnumerateArray())
                     {
-                        browserWs = ws.GetString();
-                        if (!string.IsNullOrEmpty(browserWs)) break;
+                        if (target.TryGetProperty("type", out var type)
+                            && type.GetString() == "page"
+                            && target.TryGetProperty("webSocketDebuggerUrl", out var ws))
+                        {
+                            pageWs = ws.GetString();
+                            if (!string.IsNullOrEmpty(pageWs)) break;
+                        }
                     }
                 }
-                catch { Thread.Sleep(50); }
-            }
-            if (string.IsNullOrEmpty(browserWs)) return (false, "Chrome DevTools endpoint was not available");
-
-            using var browserSocket = new ClientWebSocket();
-            browserSocket.ConnectAsync(new Uri(browserWs), CancellationToken.None).GetAwaiter().GetResult();
-            using var created = CdpCommand(browserSocket, 1, "Target.createTarget", new { url = "about:blank" });
-            var targetId = created.RootElement.GetProperty("result").GetProperty("targetId").GetString();
-            if (string.IsNullOrEmpty(targetId)) return (false, "Chrome did not create a screenshot target");
-
-            string? pageWs = null;
-            var targets = http.GetStringAsync($"http://127.0.0.1:{port}/json/list").GetAwaiter().GetResult();
-            using (var targetJson = JsonDocument.Parse(targets))
-            {
-                foreach (var target in targetJson.RootElement.EnumerateArray())
-                {
-                    if (target.GetProperty("id").GetString() == targetId
-                        && target.TryGetProperty("webSocketDebuggerUrl", out var ws))
-                    {
-                        pageWs = ws.GetString();
-                        break;
-                    }
-                }
+                catch { /* browser endpoint may still be starting */ }
+                if (string.IsNullOrEmpty(pageWs)) Thread.Sleep(50);
             }
             if (string.IsNullOrEmpty(pageWs)) return (false, "Chrome screenshot target was not discoverable");
 
