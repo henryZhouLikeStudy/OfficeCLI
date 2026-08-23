@@ -450,6 +450,8 @@ internal static class HtmlScreenshot
     {
         string profile = Path.Combine(Path.GetTempPath(), "officecli_chrome_" + Guid.NewGuid().ToString("N"));
         Process? browser = null;
+        using var cdpTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var cdpToken = cdpTimeout.Token;
         try
         {
             int port = GetFreeLoopbackPort();
@@ -503,11 +505,11 @@ internal static class HtmlScreenshot
             if (string.IsNullOrEmpty(pageWs)) return (false, "Chrome screenshot target was not discoverable");
 
             using var pageSocket = new ClientWebSocket();
-            pageSocket.ConnectAsync(new Uri(pageWs), CancellationToken.None).GetAwaiter().GetResult();
-            using var enabled = CdpCommand(pageSocket, 1, "Page.enable", new { });
+            pageSocket.ConnectAsync(new Uri(pageWs), cdpToken).GetAwaiter().GetResult();
+            using var enabled = CdpCommand(pageSocket, 1, "Page.enable", new { }, cdpToken);
             using var metrics = CdpCommand(pageSocket, 2, "Emulation.setDeviceMetricsOverride",
-                new { width = w, height = h, deviceScaleFactor = scale, mobile = false, screenWidth = w, screenHeight = h });
-            using var navigate = CdpCommand(pageSocket, 3, "Page.navigate", new { url });
+                new { width = w, height = h, deviceScaleFactor = scale, mobile = false, screenWidth = w, screenHeight = h }, cdpToken);
+            using var navigate = CdpCommand(pageSocket, 3, "Page.navigate", new { url }, cdpToken);
 
             // Wait for synchronous preview JS and local assets.  The normal HTML
             // previews are local; this is deliberately bounded rather than using
@@ -516,17 +518,17 @@ internal static class HtmlScreenshot
             while (DateTime.UtcNow < readyDeadline)
             {
                 using var state = CdpCommand(pageSocket, 4, "Runtime.evaluate",
-                    new { expression = "document.readyState", returnByValue = true });
+                    new { expression = "document.readyState", returnByValue = true }, cdpToken);
                 if (state.RootElement.GetProperty("result").GetProperty("result")
                     .GetProperty("value").GetString() == "complete") break;
                 Thread.Sleep(50);
             }
             using var scaled = CdpCommand(pageSocket, 5, "Runtime.evaluate",
-                new { expression = "window.scaleSlides && window.scaleSlides()", awaitPromise = true, returnByValue = true });
+                new { expression = "window.scaleSlides && window.scaleSlides()", awaitPromise = true, returnByValue = true }, cdpToken);
             Thread.Sleep(100);
             using var screenshot = CdpCommand(pageSocket, 6, "Page.captureScreenshot",
                 new { format = "png", captureBeyondViewport = false,
-                      clip = new { x = 0, y = 0, width = w, height = h, scale = 1 } });
+                      clip = new { x = 0, y = 0, width = w, height = h, scale = 1 } }, cdpToken);
             var base64 = screenshot.RootElement.GetProperty("result").GetProperty("data").GetString();
             if (string.IsNullOrEmpty(base64)) return (false, "Chrome returned an empty screenshot");
             File.WriteAllBytes(outPath, Convert.FromBase64String(base64));
@@ -557,14 +559,15 @@ internal static class HtmlScreenshot
         finally { listener.Stop(); }
     }
 
-    private static JsonDocument CdpCommand(ClientWebSocket socket, int id, string method, object parameters)
+    private static JsonDocument CdpCommand(ClientWebSocket socket, int id, string method, object parameters,
+                                           CancellationToken cancellationToken)
     {
         var payload = JsonSerializer.Serialize(new { id, method, @params = parameters });
         var bytes = Encoding.UTF8.GetBytes(payload);
-        socket.SendAsync(bytes, WebSocketMessageType.Text, true, CancellationToken.None).GetAwaiter().GetResult();
+        socket.SendAsync(bytes, WebSocketMessageType.Text, true, cancellationToken).GetAwaiter().GetResult();
         while (true)
         {
-            var text = ReceiveCdpMessage(socket);
+            var text = ReceiveCdpMessage(socket, cancellationToken);
             var json = JsonDocument.Parse(text);
             if (json.RootElement.TryGetProperty("id", out var responseId) && responseId.GetInt32() == id)
                 return json;
@@ -572,14 +575,14 @@ internal static class HtmlScreenshot
         }
     }
 
-    private static string ReceiveCdpMessage(ClientWebSocket socket)
+    private static string ReceiveCdpMessage(ClientWebSocket socket, CancellationToken cancellationToken)
     {
         var buffer = new byte[16 * 1024];
         using var stream = new MemoryStream();
         WebSocketReceiveResult result;
         do
         {
-            result = socket.ReceiveAsync(buffer, CancellationToken.None).GetAwaiter().GetResult();
+            result = socket.ReceiveAsync(buffer, cancellationToken).GetAwaiter().GetResult();
             if (result.MessageType == WebSocketMessageType.Close)
                 throw new InvalidOperationException("Chrome DevTools connection closed");
             stream.Write(buffer, 0, result.Count);
