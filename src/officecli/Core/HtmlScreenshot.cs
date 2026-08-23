@@ -9,6 +9,7 @@ using System.Runtime.InteropServices;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace OfficeCli.Core;
 
@@ -532,10 +533,15 @@ internal static class HtmlScreenshot
 
             using var pageSocket = new ClientWebSocket();
             pageSocket.ConnectAsync(new Uri(pageWs), cdpToken).GetAwaiter().GetResult();
-            using var enabled = CdpCommand(pageSocket, 1, "Page.enable", new { }, cdpToken);
+            using var enabled = CdpCommand(pageSocket, 1, "Page.enable", new JsonObject(), cdpToken);
             using var metrics = CdpCommand(pageSocket, 2, "Emulation.setDeviceMetricsOverride",
-                new { width = w, height = h, deviceScaleFactor = scale, mobile = false, screenWidth = w, screenHeight = h }, cdpToken);
-            using var navigate = CdpCommand(pageSocket, 3, "Page.navigate", new { url }, cdpToken);
+                new JsonObject
+                {
+                    ["width"] = w, ["height"] = h, ["deviceScaleFactor"] = scale,
+                    ["mobile"] = false, ["screenWidth"] = w, ["screenHeight"] = h,
+                }, cdpToken);
+            using var navigate = CdpCommand(pageSocket, 3, "Page.navigate",
+                new JsonObject { ["url"] = url }, cdpToken);
 
             // Wait for synchronous preview JS and local assets.  The normal HTML
             // previews are local; this is deliberately bounded rather than using
@@ -544,7 +550,7 @@ internal static class HtmlScreenshot
             while (DateTime.UtcNow < readyDeadline)
             {
                 using var state = CdpCommand(pageSocket, 4, "Runtime.evaluate",
-                    new { expression = "document.readyState", returnByValue = true }, cdpToken);
+                    new JsonObject { ["expression"] = "document.readyState", ["returnByValue"] = true }, cdpToken);
                 if (state.RootElement.GetProperty("result").GetProperty("result")
                     .GetProperty("value").GetString() == "complete") break;
                 Thread.Sleep(50);
@@ -561,11 +567,17 @@ internal static class HtmlScreenshot
                 "if(s.length===1){const e=s[0],sw=e.offsetWidth,sh=e.offsetHeight,k=Math.min(innerWidth/sw,innerHeight/sh);e.style.transform='scale('+k+')';e.style.transformOrigin='center top';const p=e.parentElement;p.style.width=(sw*k)+'px';p.style.height=(sh*k)+'px';}" +
                 "return JSON.stringify({className:document.documentElement.className,innerWidth:innerWidth,innerHeight:innerHeight,mainWidth:m&&m.clientWidth,mainHeight:m&&m.clientHeight,slideWidth:s.length?s[0].offsetWidth:0,slideHeight:s.length?s[0].offsetHeight:0});})()";
             using var scaled = CdpCommand(pageSocket, 5, "Runtime.evaluate",
-                new { expression = normalize, awaitPromise = true, returnByValue = true }, cdpToken);
+                new JsonObject { ["expression"] = normalize, ["awaitPromise"] = true, ["returnByValue"] = true }, cdpToken);
             Thread.Sleep(100);
             using var screenshot = CdpCommand(pageSocket, 6, "Page.captureScreenshot",
-                new { format = "png", captureBeyondViewport = false,
-                      clip = new { x = 0, y = 0, width = w, height = h, scale = 1 } }, cdpToken);
+                new JsonObject
+                {
+                    ["format"] = "png", ["captureBeyondViewport"] = false,
+                    ["clip"] = new JsonObject
+                    {
+                        ["x"] = 0, ["y"] = 0, ["width"] = w, ["height"] = h, ["scale"] = 1,
+                    },
+                }, cdpToken);
             var base64 = screenshot.RootElement.GetProperty("result").GetProperty("data").GetString();
             if (string.IsNullOrEmpty(base64)) return (false, "Chrome returned an empty screenshot");
             File.WriteAllBytes(outPath, Convert.FromBase64String(base64));
@@ -602,10 +614,15 @@ internal static class HtmlScreenshot
             Console.Error.WriteLine($"[officecli-screenshot] {message}");
     }
 
-    private static JsonDocument CdpCommand(ClientWebSocket socket, int id, string method, object parameters,
+    private static JsonDocument CdpCommand(ClientWebSocket socket, int id, string method, JsonObject parameters,
                                            CancellationToken cancellationToken)
     {
-        var payload = JsonSerializer.Serialize(new { id, method, @params = parameters });
+        var payload = new JsonObject
+        {
+            ["id"] = id,
+            ["method"] = method,
+            ["params"] = parameters,
+        }.ToJsonString();
         var bytes = Encoding.UTF8.GetBytes(payload);
         socket.SendAsync(bytes, WebSocketMessageType.Text, true, cancellationToken).GetAwaiter().GetResult();
         while (true)
