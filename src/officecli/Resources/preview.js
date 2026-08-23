@@ -16,8 +16,12 @@
         // 40px breathing room for interactive viewing; headless captures fill the
         // viewport (the screenshot path sizes it to the slide) so they take none.
         const headless = document.documentElement.classList.contains('headless');
-        const availW = main.clientWidth - (headless ? 0 : 40);
-        const availH = main.clientHeight - (headless ? 0 : 40);
+        // For an exact headless capture, use the browser's emulated viewport
+        // directly. Flex children can report a narrower client box while the
+        // screenshot canvas is still the full viewport (especially on Windows
+        // Edge/Chrome), which otherwise shrinks a 16:9 slide to ~1116x627.
+        const availW = headless ? window.innerWidth : main.clientWidth - 40;
+        const availH = headless ? window.innerHeight : main.clientHeight - 40;
         const slides = document.querySelectorAll('.main > .slide-container .slide');
         // A lone headless slide is a single-slide screenshot: scale it to fill the
         // viewport in BOTH directions (up or down) so the capture is flush at the
@@ -32,7 +36,7 @@
         // limited to headless one-slide previews: scrolling/grid/range previews
         // and non-PPT HTML retain their normal responsive layout.
         if (fill) {
-            const canvasH = Math.max(main.clientHeight, window.outerHeight || 0);
+            const canvasH = Math.max(window.innerHeight, window.outerHeight || 0);
             if (canvasH > main.clientHeight) {
                 document.documentElement.style.height = canvasH + 'px';
                 document.body.style.height = canvasH + 'px';
