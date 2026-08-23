@@ -395,7 +395,7 @@ internal static class HtmlScreenshot
         // which can crop/letterbox callers that deliberately sized the viewport
         // to a page or slide.
         var args = new[] { "screenshot", $"--viewport-size={w},{h}", url, outPath };
-        return RunBinary(pw, args);
+        return RunBinary(pw, args, timeoutMs: 30_000);
     }
 
     // ----- Chromium family ---------------------------------------------------------------
@@ -437,7 +437,7 @@ internal static class HtmlScreenshot
             $"--screenshot={outPath}",
             url,
         };
-        return RunBinary(bin, args);
+        return RunBinary(bin, args, timeoutMs: 30_000);
     }
 
     /// <summary>
@@ -765,7 +765,7 @@ internal static class HtmlScreenshot
         catch { return (false, null); }
     }
 
-    private static (bool, string?) RunBinary(string bin, string[] args)
+    private static (bool, string?) RunBinary(string bin, string[] args, int timeoutMs = 120_000)
     {
         try
         {
@@ -783,14 +783,24 @@ internal static class HtmlScreenshot
             foreach (var a in args) psi.ArgumentList.Add(a);
             using var p = Process.Start(psi);
             if (p == null) return (false, "process did not start");
-            if (!p.WaitForExit(120_000))
+            // Drain both redirected pipes while the child runs. Waiting first
+            // can deadlock a verbose browser once stderr/stdout fills its pipe.
+            var stdoutTask = p.StandardOutput.ReadToEndAsync();
+            var stderrTask = p.StandardError.ReadToEndAsync();
+            if (!p.WaitForExit(timeoutMs))
             {
                 try { p.Kill(true); } catch { /* ignore */ }
-                return (false, "timeout after 120s");
+                try
+                {
+                    Task.WhenAll(stdoutTask, stderrTask).Wait(TimeSpan.FromSeconds(2));
+                }
+                catch { /* ignore */ }
+                return (false, $"timeout after {timeoutMs}ms");
             }
+            stdoutTask.GetAwaiter().GetResult();
+            var stderr = stderrTask.GetAwaiter().GetResult();
             if (p.ExitCode != 0)
             {
-                var stderr = p.StandardError.ReadToEnd();
                 var lastLine = stderr.Trim().Split('\n').LastOrDefault() ?? $"exit {p.ExitCode}";
                 return (false, lastLine);
             }
