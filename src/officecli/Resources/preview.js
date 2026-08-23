@@ -24,15 +24,32 @@
         // requested resolution regardless of the slide's physical size. Interactive
         // and multi-slide views only ever shrink to fit.
         const fill = headless && slides.length === 1;
+        // Chromium's command-line screenshot can expose a layout viewport that
+        // is shorter than the bitmap it will emit (window chrome is included in
+        // --window-size).  For the one-slide capture path, use the outer canvas
+        // height when it is larger so the slide fills the requested bitmap
+        // instead of shrinking into a dark letterbox.  This is deliberately
+        // limited to headless one-slide previews: scrolling/grid/range previews
+        // and non-PPT HTML retain their normal responsive layout.
+        if (fill) {
+            const canvasH = Math.max(main.clientHeight, window.outerHeight || 0);
+            if (canvasH > main.clientHeight) {
+                document.documentElement.style.height = canvasH + 'px';
+                document.body.style.height = canvasH + 'px';
+                main.style.height = canvasH + 'px';
+                main.style.flex = 'none';
+            }
+        }
+        const captureH = fill ? main.clientHeight : availH;
         slides.forEach(slide => {
             const designW = slide.offsetWidth;
-            if (availW > 0 && availH > 0 && (fill || designW > availW)) {
+            if (availW > 0 && captureH > 0 && (fill || designW > availW)) {
                 // A headless single-slide capture must fit both layout axes.
                 // Chromium's legacy command-line screenshot can expose a
                 // shorter layout viewport than its requested bitmap; fitting by
                 // height preserves footers/legends instead of cutting them off.
                 const s = fill
-                    ? Math.min(availW / designW, availH / slide.offsetHeight)
+                    ? Math.min(availW / designW, captureH / slide.offsetHeight)
                     : availW / designW;
                 slide.style.transform = `scale(${s})`;
                 slide.style.transformOrigin = 'center top';
