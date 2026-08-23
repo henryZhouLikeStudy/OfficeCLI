@@ -523,8 +523,19 @@ internal static class HtmlScreenshot
                     .GetProperty("value").GetString() == "complete") break;
                 Thread.Sleep(50);
             }
+            // Force the screenshot marker even when a caller supplies a custom
+            // HTML path without the hash-based bootstrap script. Then rescale
+            // from the actual emulated viewport and normalize the single-slide
+            // canvas inline; this also makes the CDP path self-diagnosing rather
+            // than silently relying on a stale flex layout.
+            const string normalize = "(()=>{document.documentElement.classList.add('headless');" +
+                "document.body.classList.remove('fullscreen');" +
+                "const m=document.querySelector('.main');if(m){m.style.width=innerWidth+'px';m.style.height=innerHeight+'px';m.style.minWidth=innerWidth+'px';m.style.minHeight=innerHeight+'px';m.style.padding='0';m.style.gap='0';m.style.flex='none';}" +
+                "const s=document.querySelectorAll('.main > .slide-container .slide');" +
+                "if(s.length===1){const e=s[0],sw=e.offsetWidth,sh=e.offsetHeight,k=Math.min(innerWidth/sw,innerHeight/sh);e.style.transform='scale('+k+')';e.style.transformOrigin='center top';const p=e.parentElement;p.style.width=(sw*k)+'px';p.style.height=(sh*k)+'px';}" +
+                "return JSON.stringify({className:document.documentElement.className,innerWidth:innerWidth,innerHeight:innerHeight,mainWidth:m&&m.clientWidth,mainHeight:m&&m.clientHeight,slideWidth:s.length?s[0].offsetWidth:0,slideHeight:s.length?s[0].offsetHeight:0});})()";
             using var scaled = CdpCommand(pageSocket, 5, "Runtime.evaluate",
-                new { expression = "window.scaleSlides && window.scaleSlides()", awaitPromise = true, returnByValue = true }, cdpToken);
+                new { expression = normalize, awaitPromise = true, returnByValue = true }, cdpToken);
             Thread.Sleep(100);
             using var screenshot = CdpCommand(pageSocket, 6, "Page.captureScreenshot",
                 new { format = "png", captureBeyondViewport = false,
