@@ -480,17 +480,39 @@ internal static class HtmlScreenshot
             using var http = new HttpClient { Timeout = TimeSpan.FromMilliseconds(750) };
             var deadline = DateTime.UtcNow.AddSeconds(12);
             string? pageWs = null;
-            // Reuse the initial about:blank page instead of creating a target
-            // through the browser websocket.  On Windows Edge/Chrome the
-            // browser-level Target.createTarget response may arrive before the
-            // page websocket is published in /json/list, causing a false
-            // fallback to the buggy --window-size path.  Poll the list until a
-            // page target is fully discoverable.
+            var endpoint = $"http://127.0.0.1:{port}";
+            // Ask the DevTools HTTP endpoint to create the target and return its
+            // websocket directly. This is deterministic on Windows Edge/Chrome
+            // and avoids the short race where /json/list briefly contains no
+            // websocket URL after a target is created.
+            var createDeadline = DateTime.UtcNow.AddSeconds(3);
+            while (DateTime.UtcNow < createDeadline && string.IsNullOrEmpty(pageWs))
+            {
+                try
+                {
+                    using var create = new HttpRequestMessage(HttpMethod.Put,
+                        $"{endpoint}/json/new?{Uri.EscapeDataString(url)}");
+                    using var response = http.SendAsync(create, cdpToken).GetAwaiter().GetResult();
+                    if (response.IsSuccessStatusCode)
+                    {
+                        var created = response.Content.ReadAsStringAsync(cdpToken).GetAwaiter().GetResult();
+                        using var createdJson = JsonDocument.Parse(created);
+                        if (createdJson.RootElement.TryGetProperty("webSocketDebuggerUrl", out var ws))
+                            pageWs = ws.GetString();
+                    }
+                }
+                catch { /* endpoint may still be starting or unsupported */ }
+                if (string.IsNullOrEmpty(pageWs)) Thread.Sleep(50);
+                else break;
+            }
+            // Fallback for browsers that do not implement PUT /json/new:
+            // poll until a page target is fully discoverable.
+            deadline = DateTime.UtcNow.AddSeconds(12);
             while (DateTime.UtcNow < deadline && string.IsNullOrEmpty(pageWs))
             {
                 try
                 {
-                    var targets = http.GetStringAsync($"http://127.0.0.1:{port}/json/list").GetAwaiter().GetResult();
+                    var targets = http.GetStringAsync($"{endpoint}/json/list", cdpToken).GetAwaiter().GetResult();
                     using var targetJson = JsonDocument.Parse(targets);
                     foreach (var target in targetJson.RootElement.EnumerateArray())
                     {
